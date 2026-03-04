@@ -10,6 +10,7 @@ OFPT_ECHO_REQUEST = 2
 OFPT_ECHO_REPLY = 3
 OFPT_EXPERIMENTER = 4
 OFPT_FEATURES_REQUEST = 5
+OFPT_FEATURES_REPLY = 6
 
 # OpenFlow 1.3 Header Format: !BBHI
 # ! = Network Byte Order (Big-Endian)
@@ -55,23 +56,32 @@ def handle_switch(connection, address):
 
             print(f"Header: Ver {version}, Type {msg_type}, TotalLen {msg_len}, xid {xid}")
 
-
-            #read the rest of the message
+            #read remaining bytes after header
             body_data = b''
-            
             if msg_len > 8:
-            #     # read remaining bytes after header
                 body_data = safe_recv(connection, msg_len-8)
 
             #process further based on the TYPE in header
             if msg_type == OFPT_HELLO:
                 print("Received HELLO")
+
                 #send hello back
-                connection.sendall(struct.pack('!BBHI',OF_VERSION_1_3,OFPT_HELLO,8, xid))
+                hello_back = struct.pack('!BBHI',OF_VERSION_1_3,OFPT_HELLO,8, xid)
+                connection.sendall(hello_back)
 
                 #immediately ask for Features
-                connection.sendall(struct.pack('!BBHI', OF_VERSION_1_3, OFPT_FEATURES_REQUEST, 8, xid+1))
-                print('Feature Request Sent')
+                feature_request = struct.pack('!BBHI', OF_VERSION_1_3, OFPT_FEATURES_REQUEST, 8, xid+1)
+                connection.sendall(feature_request)
+                print(f'Sent HELLO back for XID {xid} and FEATURE_REQUEST')
+
+            elif msg_type == OFPT_ECHO_REQUEST:
+                # send echo reply
+                echo_reply = struct.pack('!BBHI',OF_VERSION_1_3, OFPT_ECHO_REPLY,8, xid)
+                connection.sendall(echo_reply)
+                print(f"Sent ECHO_REPLY for XID {xid}")
+
+            elif msg_type == OFPT_FEATURES_REPLY:
+                print("Received FEATURES_REPLY --- Handshake Completed!!!")
 
 
         except Exception as e:
