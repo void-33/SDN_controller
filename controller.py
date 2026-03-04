@@ -21,22 +21,49 @@ OFPT_FEATURES_REQUEST = 5
 
 switches = {}  #store per-switch state
 
+def safe_recv(connection, size):
+    # ensures we receive exactly "size" bytes
+    blocks = []
+    recieved = 0
+
+    #this is done because sometimes not all 8 bytes may have arrived at the socket buffer
+    while recieved < size:
+        block = connection.recv(size-recieved)
+        if not block:
+            #connection closed by the switch
+            return None
+        blocks.append(block)
+        recieved += len(block)
+
+    #join blocks with b'' which is an empty byte string
+    return b''.join(blocks)
+
 def handle_switch(connection, address):
     print(f"New connection from {address}")
 
     #receive data from switch
     while True:
         try:
-            data = connection.recv(1024)
-            if not data:
-                print(f"Switch {address} disconnected")
+            header_raw = safe_recv(connection,8)
+            if not header_raw:
                 break
 
-            print(f"Received {len(data)} bytes from {address}:{data.hex()}")
+            print(f"Received {len(header_raw)} bytes from {address}:{header_raw.hex()}")
 
             #todo: parse openflow message
-            version, msg_type , msg_len, xid = struct.unpack('!BBHI', data)
+            version, msg_type , msg_len, xid = struct.unpack('!BBHI', header_raw)
 
+            print(f"Header: Ver {version}, Type {msg_type}, TotalLen {msg_len}, xid {xid}")
+
+
+            #read the rest of the message
+            body_data = b''
+            
+            if msg_len > 8:
+            #     # read remaining bytes after header
+                body_data = safe_recv(connection, msg_len-8)
+
+            #process further based on the TYPE in header
             if msg_type == OFPT_HELLO:
                 print("Received HELLO")
                 #send hello back
@@ -52,6 +79,7 @@ def handle_switch(connection, address):
             break
     
     connection.close()
+    print(f"Switch {address} disconnected")
 
 
 
