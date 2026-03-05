@@ -1,58 +1,13 @@
 import socket
 import _thread
 import struct
+from ofproto.header import OFPHeader
+from ofproto.switch_features import OFPSwitchFeaturesBody
+from ofproto.packet_in import OFPPacketIn
+from ofproto.match import OFPMatch
+from ofproto.constants import OF_VERSION_1_3, OFPT,OFPP, OFPFC, OFPMT, OFP
+from utils import *
 
-#constants from the openflow specs
-OF_VERSION_1_3 = 0x04
-OFPT_HELLO = 0
-OFPT_ERROR = 1
-OFPT_ECHO_REQUEST = 2
-OFPT_ECHO_REPLY = 3
-OFPT_EXPERIMENTER = 4
-OFPT_FEATURES_REQUEST = 5
-OFPT_FEATURES_REPLY = 6
-OFPT_PACKET_IN = 10
-OFPT_PACKET_OUT = 13
-OFPT_FLOW_MOD = 14
-
-OFPP_FLOOD = 0xfffffffb
-OFPP_CONTROLLER = 0xfffffffd
-OFP_NO_BUFFER = 0xffffffff
-OFPFC_ADD = 0  # FlowMod command: add flow
-OFPMT_OXM = 1  # Match type
-
-# OpenFlow 1.3 Header Format: !BBHI
-# ! = Network Byte Order (Big-Endian)
-# B = uint8_t (1 byte)  -> version
-# B = uint8_t (1 byte)  -> type
-# H = uint16_t (2 bytes) -> length
-# I = uint32_t (4 bytes) -> xid
-
-# OpenFlow 1.3 Features Reply Body Format: !QIBB2xII
-# ! = Network Byte Order (Big-Endian)
-# Q = uint64_t (8 bytes) -> datapath_id
-# I = uint32_t (4 bytes) -> n_buffers
-# B = uint8_t  (1 byte)  -> n_tables
-# B = uint8_t  (1 byte)  -> auxiliary_id
-# 2x = pad     (2 bytes) -> (ignored/padding)
-# I = uint32_t (4 bytes) -> capabilities
-# I = uint32_t (4 bytes) -> reserved
-# Total Body = 24 bytes (Header 8 + Body 24 = 32 bytes total)
-
-# OpenFlow 1.3 PACKET_IN Body Format: !IHBBQ
-# ! = Big-Endian
-# I = uint32_t (4 bytes) -> buffer_id
-# H = uint16_t (2 bytes) -> total_len (length of the frame the switch received)
-# B = uint8_t  (1 byte)  -> reason (why it was sent)
-# B = uint8_t  (1 byte)  -> table_id (which table it hit)
-# Q = uint64_t (8 bytes) -> cookie
-# -------------------------
-# Total so far: 16 bytes
-# -------------------------
-# Followed by:
-# - struct ofp_match (Variable, usually 8 bytes)
-# - 2 bytes of padding (00 00)
-# - The raw Ethernet Frame (The actual packet)
 
 # OpenFlow 1.3 PACKET_OUT Fixed Body: !IIH6x
 # ! = Big-Endian
@@ -66,47 +21,6 @@ OFPMT_OXM = 1  # Match type
 switches = {}  # dpid -> connection
 mac_to_port = {}    # dpid -> {mac:port}
 
-def extract_in_port(body_data, match_offset, match_len):
-    oxm_ptr = match_offset + 4
-    oxm_end = match_offset + match_len
-
-    while oxm_ptr < oxm_end:
-        # Read OXM header
-        oxm_class,field_and_mask,oxm_length = struct.unpack('!HBB',body_data[oxm_ptr:oxm_ptr+4])
-
-        field = field_and_mask >> 1
-
-        value_offset = oxm_ptr + 4
-        value = body_data[value_offset:value_offset + oxm_length]
-
-        # Check for IN_PORT
-        if oxm_class == 0x8000 and field == 0:
-            in_port = struct.unpack('!I',value)[0]
-            return in_port
-
-        # Move to next OXM
-        oxm_ptr += 4 + oxm_length
-
-    return None
-
-
-
-def safe_recv(connection, size):
-    # ensures we receive exactly "size" bytes
-    blocks = []
-    recieved = 0
-
-    #this is done because sometimes not all 8 bytes may have arrived at the socket buffer
-    while recieved < size:
-        block = connection.recv(size-recieved)
-        if not block:
-            #connection closed by the switch
-            return None
-        blocks.append(block)
-        recieved += len(block)
-
-    #join blocks with b'' which is an empty byte string
-    return b''.join(blocks)
 
 def send_table_miss_flow(connection):
     # OFPT_FLOW_MOD (14)
@@ -156,13 +70,13 @@ def install_mac_flow(connection, dst_mac, out_port, xid):
     # FlowMod to forward packets to known destination MAC
     # Header
     header_len = 80
-    header = struct.pack('!BBHI', OF_VERSION_1_3, OFPT_FLOW_MOD, header_len, xid)
+    header = struct.pack('!BBHI', OF_VERSION_1_3, OFPT.FLOW_MOD, header_len, xid)
     # FlowMod fixed part
     flow_mod_fixed = struct.pack('!QQBBHHHIIIH2x',
-        0, 0, 0, OFPFC_ADD, 0, 0, 100, OFP_NO_BUFFER, 0xffffffff, 0xffffffff, 0)
+        0, 0, 0, OFPFC.ADD, 0, 0, 100, OFP.NO_BUFFER, 0xffffffff, 0xffffffff, 0)
     # Match: destination MAC
     # OXM: class=0x8000 (OpenFlow basic), field=3 (eth_dst), no mask, length=6
-    match = struct.pack('!HH', OFPMT_OXM, 12) + struct.pack('!HBB6s2x', 0x8000, 6<<1, 6, dst_mac)  # padded to 8 bytes
+    match = struct.pack('!HH', OFPMT.OXM, 12) + struct.pack('!HBB6s2x', 0x8000, 6<<1, 6, dst_mac)  # padded to 8 bytes
     # Instruction + action
     instruction = struct.pack('!HH4x', 4, 24)  # OFPIT_APPLY_ACTIONS
     action = struct.pack('!HHIH6x', 0, 16, out_port, 0)  # output to port
@@ -176,43 +90,23 @@ def handle_switch(connection, address):
     #receive data from switch
     while True:
         try:
-            header_raw = safe_recv(connection,8)
-            if not header_raw:
+            header = extract_header(connection)
+            if header is None:
                 break
 
-            version, msg_type , msg_len, xid = struct.unpack('!BBHI', header_raw)
-            # if msg_type != OFPT_ECHO_REQUEST:
-            #     print(f"Received {len(header_raw)} bytes from {address}:{header_raw.hex()}")
-            #     print(f"Header: Ver {version}, Type {msg_type}, TotalLen {msg_len}, xid {xid}")
-
             #read remaining bytes after header
-            body_data = b''
-            if msg_len > 8:
-                body_data = safe_recv(connection, msg_len-8)
+            body_data = extract_body(connection, header.message_length)
 
-            #process further based on the TYPE in header
-            if msg_type == OFPT_HELLO:
-                # print(f"Received HELLO from {address}")
+            #Process further based on the TYPE in header
+            if header.message_type == OFPT.HELLO:
+                send_hello(connection, header.xid)
+                send_feature_request(connection, header.xid + 1)
 
-                #send hello back
-                hello_back = struct.pack('!BBHI',OF_VERSION_1_3,OFPT_HELLO,8, xid)
-                connection.sendall(hello_back)
+            elif header.message_type == OFPT.ECHO_REQUEST:
+                send_echo_reply(connection, header.xid)
 
-                #immediately ask for Features
-                feature_request = struct.pack('!BBHI', OF_VERSION_1_3, OFPT_FEATURES_REQUEST, 8, xid+1)
-                connection.sendall(feature_request)
-                # print(f'Sent HELLO back for XID {xid} and FEATURE_REQUEST')
-
-            elif msg_type == OFPT_ECHO_REQUEST:
-                # send echo reply
-                echo_reply = struct.pack('!BBHI',OF_VERSION_1_3, OFPT_ECHO_REPLY,8, xid)
-                connection.sendall(echo_reply)
-                # print(f"Sent ECHO_REPLY for XID {xid} for switch {address}")
-
-            elif msg_type == OFPT_FEATURES_REPLY:
-
-                #unpack first 8 bytes as 64-bit unsigned int DPIDe
-                dpid = struct.unpack('!Q', body_data[:8])[0]
+            elif header.message_type == OFPT.FEATURES_REPLY:
+                dpid = unpack_dpid(body_data)
 
                 #convert it to hex string 00:00:00:00
                 dpid_hex = f"{dpid:016x}"
@@ -228,25 +122,19 @@ def handle_switch(connection, address):
 
                 send_table_miss_flow(connection)
 
-            elif msg_type == OFPT_PACKET_IN:
+            elif header.message_type == OFPT.PACKET_IN:
                 if not formatted_dpid:
                     continue
 
-                # 1. Unpack Fixed Body
-                # buffer_id(4), total_len(2), reason(1), table_id(1), cookie(8), match_type(2), match_len(2)
-                fixed_body = struct.unpack('!IHBBQHH', body_data[:20])
-                buffer_id = fixed_body[0]
-                match_len = fixed_body[6]
+                #unpack the body
+                packet_in_body = OFPPacketIn.parse(body_data)
+                match_len = packet_in_body.ofp_match.length
+                oxm_length = match_len - 4
                 
                 # 2. Extract In_Port & Ethernet Frame
-                match_offset = 16
-                padded_match_len = ((match_len + 7) // 8) * 8
-                
-                in_port = extract_in_port(body_data, match_offset, match_len)
-                if in_port is None: in_port = OFPP_CONTROLLER
-
-                eth_offset = 16 + padded_match_len + 2
-                ethernet_frame = body_data[eth_offset:]
+                ethernet_frame = packet_in_body.frame_data
+                in_port = extract_in_port(packet_in_body.ofp_match.oxm_field,oxm_length)
+                if in_port is None: in_port = OFPP.CONTROLLER
 
                 # 3. MAC Learning
                 src_mac = ethernet_frame[6:12]
@@ -254,10 +142,10 @@ def handle_switch(connection, address):
                 mac_to_port[formatted_dpid][src_mac] = in_port
 
                 # 4. Determine Output Port
-                out_port = mac_to_port[formatted_dpid].get(dst_mac, OFPP_FLOOD)
+                out_port = mac_to_port[formatted_dpid].get(dst_mac, OFPP.FLOOD)
 
                 # 5. Install Flow (FlowMod) if we know where the destination is
-                if out_port != OFPP_FLOOD:
+                if out_port != OFPP.FLOOD:
                     # Match: 0x8000 (Basic) | 0x06 (Eth_Dst) | Len 6
                     # 12 byte match + 4 byte padding = 16
                     match_packet = struct.pack('!HHHBB6s2x', 1, 12, 0x8000, 6<<1, 6, dst_mac)
@@ -270,7 +158,7 @@ def handle_switch(connection, address):
                     # FlowMod Fixed (40 bytes) - Priority 100, Idle Timeout 30s
                     fm_fixed = struct.pack('!QQBBHHHIIIH2x', 0, 0, 0, 0, 30, 0, 100, 0xffffffff, 0xffffffff, 0xffffffff, 0)
                     
-                    fm_header = struct.pack('!BBHI', 4, 14, 8 + 40 + 16 + 24, xid)
+                    fm_header = struct.pack('!BBHI', 4, 14, 8 + 40 + 16 + 24, header.xid)
                     connection.sendall(fm_header + fm_fixed + match_packet + inst_fm + action_fm)
                     print(f"[{formatted_dpid}] Flow Installed: {dst_mac.hex(':')} -> Port {out_port}")
 
@@ -279,14 +167,14 @@ def handle_switch(connection, address):
                 po_action = struct.pack('!HHIH6x', 0, 16, out_port, 0xffff)
                 
                 po_body_len = 16 + 16 # Fixed Body + 1 Action
-                if buffer_id == 0xffffffff:
+                if packet_in_body.buffer_id== 0xffffffff:
                     po_body_len += len(ethernet_frame)
                 
-                po_header = struct.pack('!BBHI', 4, 13, 8 + po_body_len, xid)
-                po_fixed = struct.pack('!IIH6x', buffer_id, in_port, 16)
+                po_header = struct.pack('!BBHI', 4, 13, 8 + po_body_len, header.xid)
+                po_fixed = struct.pack('!IIH6x', packet_in_body.buffer_id, in_port, 16)
                 
                 packet_out_msg = po_header + po_fixed + po_action
-                if buffer_id == 0xffffffff:
+                if packet_in_body.buffer_id == 0xffffffff:
                     packet_out_msg += ethernet_frame
                 
                 connection.sendall(packet_out_msg)
@@ -294,7 +182,7 @@ def handle_switch(connection, address):
                 # Console Log
                 d_mac_str = dst_mac.hex(':')
                 s_mac_str = src_mac.hex(':')
-                print(f"[{formatted_dpid}] {s_mac_str} -> {d_mac_str} | Port: {out_port}")
+                # print(f"[{formatted_dpid}] {s_mac_str} -> {d_mac_str} | Port: {out_port}")
         except Exception as e:
             print(f"Error with {address}:{e}")
             break
@@ -306,7 +194,7 @@ def handle_switch(connection, address):
 
 if __name__ == '__main__':
     #localhost
-    HOST = '0.0.0.0'
+    HOST = '127.0.0.1'
     #default port in mininet for controller to listen to
     PORT = 6653
 
