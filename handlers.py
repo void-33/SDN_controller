@@ -117,6 +117,11 @@ def handle_switch_connection(connection, address):
             break
 
     connection.close()
+    # Clean up so the LLDP sender doesn't try to use the stale socket
+    utils.release_send_lock(connection)
+    if formatted_dpid and switches.get(formatted_dpid) is connection:
+        switches.pop(formatted_dpid, None)
+        topology.deregister_switch(formatted_dpid)
     print(f"Switch {address} disconnected")
 
 def handle_features_reply(connection, body_data, address, switches, mac_to_port, xid):

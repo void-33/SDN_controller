@@ -8,6 +8,31 @@ from ofproto.flow_mod import OFPFlowMod
 from ofproto.multipart import OFPMultipartRequest
 from ofproto.lldp import LLDPPacket
 import struct
+import threading
+
+# Per-connection send lock.
+# Python's socket.sendall() releases the GIL during I/O syscalls, so bytes
+# from two concurrent sendall() calls on the same socket can interleave,
+# corrupting the OpenFlow message stream and causing the switch to send TCP RST.
+# This dict maps each connection socket to its own lock.
+_socket_locks: dict = {}
+_socket_locks_guard = threading.Lock()
+
+
+def locked_send(connection, data: bytes):
+    """Thread-safe wrapper around sendall. Always use this instead of connection.sendall()."""
+    with _socket_locks_guard:
+        if connection not in _socket_locks:
+            _socket_locks[connection] = threading.Lock()
+        lock = _socket_locks[connection]
+    with lock:
+        connection.sendall(data)
+
+
+def release_send_lock(connection):
+    """Call when a connection is closed to free its lock entry."""
+    with _socket_locks_guard:
+        _socket_locks.pop(connection, None)
 
 
 def safe_recv(connection, size):
@@ -48,15 +73,15 @@ def extract_body(connection,message_length:int):
 
 def send_hello(connection,xid:int):
     header = OFPHeader(ofc.OF_VERSION_1_3, ofc.OFPT.HELLO,OFPHeader.STRUCT_SIZE, xid)
-    connection.sendall(header.pack())
+    locked_send(connection, header.pack())
 
 def send_feature_request(connection, xid:int):
     header = OFPHeader(ofc.OF_VERSION_1_3, ofc.OFPT.FEATURES_REQUEST, OFPHeader.STRUCT_SIZE,xid)
-    connection.sendall(header.pack())
+    locked_send(connection, header.pack())
 
 def send_echo_reply(connection, xid:int):
     header = OFPHeader(ofc.OF_VERSION_1_3, ofc.OFPT.ECHO_REPLY, OFPHeader.STRUCT_SIZE, xid)
-    connection.sendall(header.pack())
+    locked_send(connection, header.pack())
 
 def unpack_dpid(body_data:bytes):
     features_reply_body = OFPSwitchFeaturesBody.parse(body_data)
@@ -128,7 +153,7 @@ def send_table_miss_flow(connection):
     action_to_send = OFPActionOut(type=ofc.OFPAT.OUTPUT, len=16, port=ofc.OFPP.CONTROLLER, max_len=0xffff)
     action_data = action_to_send.pack()
 
-    connection.sendall(header_data+ flow_mod_data + inst_data + action_data)
+    locked_send(connection, header_data + flow_mod_data + inst_data + action_data)
 
 
 def install_mac_flow(connection, dst_mac, out_port, xid):
@@ -170,9 +195,7 @@ def install_mac_flow(connection, dst_mac, out_port, xid):
         xid=xid,
     )
     header_data = header_to_send.pack()
-    connection.sendall(
-        header_data + flow_mod_data + inst_data + action_data
-    )
+    locked_send(connection, header_data + flow_mod_data + inst_data + action_data)
     # print(
     #     f"[{formatted_dpid}] Flow Installed: {dst_mac.hex(':')} -> Port {out_port}"
     # )
@@ -205,7 +228,7 @@ def send_packet_out(connection, packet_in_body,in_port, out_port, ethernet_frame
     if packet_in_body.buffer_id == 0xFFFFFFFF:
         packet_out_msg += ethernet_frame
 
-    connection.sendall(packet_out_msg)
+    locked_send(connection, packet_out_msg)
 
     # print(f'packet sent, src:{src_mac.hex(':')} -> dst: {dst_mac.hex(':')}')
 
@@ -222,7 +245,7 @@ def send_port_desc_request(connection, xid: int):
         message_length=OFPHeader.STRUCT_SIZE + len(body),
         xid=xid,
     )
-    connection.sendall(header.pack() + body)
+    locked_send(connection, header.pack() + body)
 
 
 def send_lldp_out(connection, dpid_int: int, port_no: int, xid: int):
@@ -251,6 +274,7 @@ def send_lldp_out(connection, dpid_int: int, port_no: int, xid: int):
         actions_len=len(action_data),
     )
 
-    connection.sendall(
+    locked_send(
+        connection,
         header.pack() + packet_out_to_send.pack() + action_data + lldp_frame
     )

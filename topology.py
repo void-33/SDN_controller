@@ -75,3 +75,17 @@ def print_topology():
     print("[Topology] Discovered Links:")
     for src_dpid, src_port, dst_dpid, dst_port in sorted(all_links):
         print(f"  {src_dpid}:{src_port}  -->  {dst_dpid}:{dst_port}")
+    print('Total Links:',len(all_links))
+
+
+def deregister_switch(dpid: str):
+    """
+    Remove all topology state for a switch that has disconnected.
+    Called from handlers.py when the switch's TCP connection is closed.
+    """
+    with _lock:
+        port_map.pop(dpid, None)
+        # Remove directed links that originated from this switch
+        stale = [k for k in links if k[0] == dpid]
+        for k in stale:
+            del links[k]
