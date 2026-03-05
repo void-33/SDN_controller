@@ -1,6 +1,6 @@
 import socket
 import _thread
-from handlers import handle_switch_connection
+from handlers import handle_switch_connection, start_lldp_sender
 
 if __name__ == "__main__":
     # localhost
@@ -25,6 +25,9 @@ if __name__ == "__main__":
     server_socket.listen()
 
     print(f"Controller listening on {HOST}:{PORT}")
+
+    # Start background LLDP probe thread
+    start_lldp_sender()
 
     while True:
         connection, client = server_socket.accept()

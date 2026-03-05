@@ -5,6 +5,8 @@ from ofproto.match import OFPMatch
 from ofproto.action_out import OFPActionOut, OFPInstructionActions
 from ofproto.packet_out import OFPPacketOut
 from ofproto.flow_mod import OFPFlowMod
+from ofproto.multipart import OFPMultipartRequest
+from ofproto.lldp import LLDPPacket
 import struct
 
 
@@ -206,3 +208,49 @@ def send_packet_out(connection, packet_in_body,in_port, out_port, ethernet_frame
     connection.sendall(packet_out_msg)
 
     # print(f'packet sent, src:{src_mac.hex(':')} -> dst: {dst_mac.hex(':')}')
+
+
+def send_port_desc_request(connection, xid: int):
+    """
+    Ask a switch to send back its full port list (OFPMP_PORT_DESC = 13).
+    The switch replies with one or more MULTIPART_REPLY messages.
+    """
+    body = OFPMultipartRequest(type=ofc.OFPMP.PORT_DESC, flags=0).pack()
+    header = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.MULTIPART_REQUEST,
+        message_length=OFPHeader.STRUCT_SIZE + len(body),
+        xid=xid,
+    )
+    connection.sendall(header.pack() + body)
+
+
+def send_lldp_out(connection, dpid_int: int, port_no: int, xid: int):
+    """
+    Send an LLDP frame out of a specific port on a switch via PACKET_OUT.
+    The switch will forward the raw Ethernet frame out of port_no.
+    """
+    lldp_frame = LLDPPacket.create(dpid_int, port_no).pack()
+
+    action_to_send = OFPActionOut(
+        type=ofc.OFPAT.OUTPUT, len=16, port=port_no, max_len=0xFFFF
+    )
+    action_data = action_to_send.pack()
+
+    message_length = OFPHeader.STRUCT_SIZE + 16 + len(action_data) + len(lldp_frame)
+    header = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.PACKET_OUT,
+        message_length=message_length,
+        xid=xid,
+    )
+
+    packet_out_to_send = OFPPacketOut(
+        buffer_id=ofc.OFP.NO_BUFFER,
+        in_port=ofc.OFPP.CONTROLLER,
+        actions_len=len(action_data),
+    )
+
+    connection.sendall(
+        header.pack() + packet_out_to_send.pack() + action_data + lldp_frame
+    )

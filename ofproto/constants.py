@@ -13,6 +13,8 @@ class OFPT(IntEnum):
     PACKET_IN = 10
     PACKET_OUT = 13
     FLOW_MOD = 14
+    MULTIPART_REQUEST = 18
+    MULTIPART_REPLY = 19
 
 
 class OFPP(IntEnum):
@@ -39,3 +41,6 @@ class OFPAT(IntEnum):
 
 class OFPIT(IntEnum):
     APPLY_ACTIONS = 4
+
+class OFPMP(IntEnum):
+    PORT_DESC = 13
