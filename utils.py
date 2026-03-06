@@ -278,3 +278,32 @@ def send_lldp_out(connection, dpid_int: int, port_no: int, xid: int):
         connection,
         header.pack() + packet_out_to_send.pack() + action_data + lldp_frame
     )
+
+def send_raw_packet_out(connection, ethernet_frame: bytes, out_port: int, xid: int):
+    """
+    Send a raw Ethernet frame out of a specific port on a switch.
+    Used for controlled flooding to remote switches.
+    """
+    action_to_send = OFPActionOut(
+        type=ofc.OFPAT.OUTPUT, len=16, port=out_port, max_len=0xFFFF
+    )
+    action_data = action_to_send.pack()
+
+    message_length = OFPHeader.STRUCT_SIZE + 16 + len(action_data) + len(ethernet_frame)
+    header = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.PACKET_OUT,
+        message_length=message_length,
+        xid=xid,
+    )
+
+    packet_out_to_send = OFPPacketOut(
+        buffer_id=ofc.OFP.NO_BUFFER,
+        in_port=ofc.OFPP.CONTROLLER,
+        actions_len=len(action_data),
+    )
+
+    locked_send(
+        connection,
+        header.pack() + packet_out_to_send.pack() + action_data + ethernet_frame,
+    )
