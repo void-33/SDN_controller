@@ -5,15 +5,21 @@ from pydantic import BaseModel
 import threading
 import sys
 import os
+from typing import List, Tuple
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import topology
 import handlers
 import controller
+import utils
+import routing
 
 app = FastAPI()
 
 @app.on_event("startup")
 def startup_event():
+    if os.environ.get("SDN_SKIP_CONTROLLER_STARTUP") == "1":
+        return
+
     # Start the SDN controller in a background thread
     controller_thread = threading.Thread(target=controller.start_controller, daemon=True)
     controller_thread.start()
@@ -128,7 +134,7 @@ def get_path(src: str = Query(...), dst: str = Query(...)):
     src_ep = _resolve_node_endpoint(src, switches)
     dst_ep = _resolve_node_endpoint(dst, switches)
     if not src_ep or not dst_ep:
-        return {"found": False, "edge_ids": []}
+        return {"found": False, "edge_ids": [], "huh": False}
 
     src_sw = src_ep["switch_dpid"]
     dst_sw = dst_ep["switch_dpid"]
@@ -145,9 +151,10 @@ def get_path(src: str = Query(...), dst: str = Query(...)):
         if src_sw == dst_sw:
             flow_path = []
         else:
-            flow_path = topology.find_path(src_sw, dst_sw)
+            decision = routing.select_path(src_sw, dst_sw, src_ep["mac"], dst_ep["mac"])
+            flow_path = decision.path
             if not flow_path:
-                return {"found": False, "edge_ids": []}
+                return {"found": False, "edge_ids": [], "ohno": decision}
 
     edge_ids = []
     seen = set()
@@ -185,11 +192,13 @@ def get_flows():
     if hasattr(handlers, 'active_flows'):
         for k, v in handlers.active_flows.items():
             flows.append({
-                "src_mac": k[0],
-                "dst_mac": k[1],
+                "src_mac": k[0].hex(':') if isinstance(k[0], (bytes, bytearray)) else str(k[0]),
+                "dst_mac": k[1].hex(':') if isinstance(k[1], (bytes, bytearray)) else str(k[1]),
                 "path": v.get('path'),
                 "dst_dpid": v.get('dst_dpid'),
-                "dst_port": v.get('dst_port')
+                "dst_port": v.get('dst_port'),
+                "routing_mode": v.get('routing_mode'),
+                "dqn_action": v.get('dqn_action'),
             })
     return {"flows": flows}
 
@@ -198,10 +207,130 @@ class LinkCostUpdate(BaseModel):
     dst_dpid: str
     cost: int
 
+
+class RoutingModeUpdate(BaseModel):
+    mode: str
+
+
+class ClearFlowRequest(BaseModel):
+    src_mac: str = "00:00:00:00:01:01"
+    dst_mac: str = "00:00:00:00:03:03"
+
 @app.post("/api/link_cost")
 def update_link_cost(data: LinkCostUpdate):
     topology.set_hardcoded_cost(data.src_dpid, data.dst_dpid, data.cost)
     return {"status": "ok"}
+
+
+@app.get("/api/routing-mode")
+def get_routing_mode():
+    return {
+        "mode": routing.get_mode(),
+        "valid_modes": sorted(routing.VALID_ROUTING_MODES),
+        "dqn_model_path": routing.DQN_MODEL_PATH,
+        "dqn_available": routing.get_dqn_availability_error() is None,
+    }
+
+
+@app.post("/api/routing-mode")
+def update_routing_mode(req: RoutingModeUpdate):
+    decision = routing.set_mode(req.mode)
+    if decision.error:
+        return {"status": "error", "mode": routing.get_mode(), "message": decision.error}
+    return {"status": "success", "mode": routing.get_mode()}
+
+
+@app.post("/api/clear-flow")
+def clear_flow(req: ClearFlowRequest):
+    src_mac = bytes.fromhex(req.src_mac.replace(":", ""))
+    dst_mac = bytes.fromhex(req.dst_mac.replace(":", ""))
+    old_flow = handlers.clear_flow(src_mac, dst_mac)
+    old_flow_rev = handlers.clear_flow(dst_mac, src_mac)
+    return {
+        "status": "success",
+        "cleared": old_flow is not None,
+        "cleared_rev": old_flow_rev is not None,
+        "src_mac": req.src_mac,
+        "dst_mac": req.dst_mac,
+    }
+
+
+@app.get("/api/metrics")
+def get_metrics():
+    metrics = []
+    for link in topology.get_all_links():
+        src_dpid, src_port, dst_dpid, dst_port, _last_seen, cost = link
+        info = topology.get_link_info(src_dpid, src_port) or {}
+        metrics.append({
+            "src_dpid": src_dpid,
+            "src_port": src_port,
+            "dst_dpid": dst_dpid,
+            "dst_port": dst_port,
+            "cost": cost,
+            "latency_ms": info.get("latency_ms", 1.0),
+            "bandwidth_bps": info.get("bandwidth_bps", 1_000_000_000.0),
+            "loss": info.get("loss", 0.0),
+        })
+    return {"metrics": metrics}
+
+
+def _k_shortest_simple_paths(src: str, dst: str, k: int) -> list:
+    """Return up to k simple switch paths ordered by hop count."""
+    return routing.k_shortest_hop_paths(src, dst, k)
+
+
+@app.get("/api/k-shortest-paths")
+def get_k_shortest_paths(src: str = Query(...), dst: str = Query(...), k: int = Query(5, ge=1, le=20)):
+    return {"paths": _k_shortest_simple_paths(src, dst, k)}
+
+
+class InstallPathRequest(BaseModel):
+    src_mac: str
+    dst_mac: str
+    path: List[Tuple[str, int]]
+    routing_mode: str = "api"
+
+
+@app.post("/api/install-path")
+def install_selected_path(req: InstallPathRequest):
+    src_mac = bytes.fromhex(req.src_mac.replace(":", ""))
+    dst_mac = bytes.fromhex(req.dst_mac.replace(":", ""))
+    path = [(dpid, int(out_port)) for dpid, out_port in req.path]
+
+    dst_dpid, dst_port = topology.get_switch_for_mac(dst_mac, handlers.mac_to_port)
+    if not dst_dpid:
+        return {"status": "error", "message": "Destination host unknown"}
+
+    flow_key = (src_mac, dst_mac)
+    old_flow = handlers.active_flows.get(flow_key)
+    if old_flow:
+        for hop_dpid, _hop_out_port in old_flow.get("path", []):
+            hop_connection = handlers.switches.get(hop_dpid)
+            if hop_connection:
+                utils.remove_mac_flow(hop_connection, dst_mac)
+        old_dst_connection = handlers.switches.get(old_flow.get("dst_dpid"))
+        if old_dst_connection:
+            utils.remove_mac_flow(old_dst_connection, dst_mac)
+
+    for hop_dpid, hop_out_port in path:
+        hop_connection = handlers.switches.get(hop_dpid)
+        if hop_connection:
+            utils.install_mac_flow(hop_connection, dst_mac, hop_out_port, xid=0)
+
+    dst_connection = handlers.switches.get(dst_dpid)
+    if dst_connection:
+        utils.install_mac_flow(dst_connection, dst_mac, dst_port, xid=0)
+
+    handlers.active_flows[flow_key] = {
+        "path": path,
+        "dst_dpid": dst_dpid,
+        "dst_port": dst_port,
+        "rl_managed": True,
+        "routing_mode": req.routing_mode,
+        "dqn_action": None,
+    }
+
+    return {"status": "success", "message": "Path installed successfully"}
 
 @app.websocket("/ws/topology")
 async def websocket_topology(websocket: WebSocket):

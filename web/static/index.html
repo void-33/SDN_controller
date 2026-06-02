@@ -1,421 +1,578 @@
 <!DOCTYPE html>
 <html>
+
 <head>
-  <title>SDN Topology Visualization</title>
-  <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
-  <style>
-    body { margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; background: #fafafa; }
-    #cy { width: 100vw; height: 100vh; display: block; }
-    #status { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 10px; background: rgba(255,255,255,0.9); border-radius: 4px; box-shadow: 0 0 5px rgba(0,0,0,0.2); }
-    #tooltip { position: absolute; z-index: 20; display: none; padding: 6px 8px; font-size: 18px; color: #111; background: rgba(255,255,255,0.95); border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); pointer-events: none; font-weight: bold; }
-  </style>
+	<title>SDN Topology Visualization</title>
+	<script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+	<style>
+		body {
+			margin: 0;
+			padding: 0;
+			overflow: hidden;
+			font-family: sans-serif;
+			background: #fafafa;
+		}
+
+		#cy {
+			width: 100vw;
+			height: 100vh;
+			display: block;
+		}
+
+		#status {
+			position: absolute;
+			top: 10px;
+			left: 10px;
+			z-index: 10;
+			padding: 10px;
+			background: rgba(255, 255, 255, 0.9);
+			border-radius: 4px;
+			box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+		}
+
+		#mode-selector {
+			position: absolute;
+			top: 10px;
+			right: 10px;
+			z-index: 10;
+			display: inline-flex;
+			gap: 6px;
+			padding: 6px;
+			background: rgba(255, 255, 255, 0.9);
+			border-radius: 6px;
+			box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+		}
+
+		#mode-selector button {
+			border: 1px solid #ccc;
+			background: #f5f5f5;
+			color: #111;
+			padding: 6px 10px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+
+		#mode-selector button.active {
+			background: #0074D9;
+			color: #fff;
+			border-color: #0074D9;
+		}
+
+		#tooltip {
+			position: absolute;
+			z-index: 20;
+			display: none;
+			padding: 6px 8px;
+			font-size: 18px;
+			color: #111;
+			background: rgba(255, 255, 255, 0.95);
+			border: 1px solid #ddd;
+			border-radius: 6px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+			pointer-events: none;
+			font-weight: bold;
+		}
+	</style>
 </head>
+
 <body>
-  <div id="status">Connecting...</div>
-  <div id="tooltip"></div>
-  <div id="cy"></div>
-  <script>
-    // Initialize empty Cytoscape instance
-    const cy = cytoscape({
-      container: document.getElementById('cy'),
-      style: [
-        { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
-        { selector: 'node.host', style: { 'background-color': '#2ecc71', 'shape': 'round-rectangle', 'width': 44, 'height': 30 } },
-        { selector: 'node.selected-device', style: { 'border-width': 4, 'border-color': '#ff9800', 'overlay-opacity': 0, 'z-index': 999 } },
-        { selector: 'edge', style: { 'label': 'data(cost_label)', 'text-rotation': 'autorotate', 'text-margin-y': -10, 'font-size': '12px', 'color': '#555', 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
-        { selector: 'edge.undirected', style: { 'target-arrow-shape': 'none', 'line-style': 'solid' } },
-        { selector: 'edge.path-highlight', style: { 'line-color': '#ff5722', 'width': 5, 'z-index': 999 } }
-      ],
-      layout: { name: 'cose' }
-    });
+	<div id="status">Connecting...</div>
+	<div id="mode-selector">
+		<button data-mode="hop">Hop</button>
+		<button data-mode="cost" class="active">Cost</button>
+		<button data-mode="dqn">DQN</button>
+		<button id="clear-flow-btn" style="margin-left: 10px; background: #FF4136; color: white; border-color: #FF4136;">Clear Flow</button>
+	</div>
+	<div id="tooltip"></div>
+	<div id="cy"></div>
+	<script>
+		// Initialize empty Cytoscape instance
+		const cy = cytoscape({
+			container: document.getElementById('cy'),
+			style: [
+				{ selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
+				{ selector: 'node.host', style: { 'background-color': '#2ecc71', 'shape': 'round-rectangle', 'width': 44, 'height': 30 } },
+				{ selector: 'node.selected-device', style: { 'border-width': 4, 'border-color': '#ff9800', 'overlay-opacity': 0, 'z-index': 999 } },
+				{ selector: 'edge', style: { 'label': 'data(cost_label)', 'text-rotation': 'autorotate', 'text-margin-y': -10, 'font-size': '12px', 'color': '#555', 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+				{ selector: 'edge.undirected', style: { 'target-arrow-shape': 'none', 'line-style': 'solid' } },
+				{ selector: 'edge.path-highlight', style: { 'line-color': '#ff5722', 'width': 5, 'z-index': 999 } }
+			],
+			layout: { name: 'cose' }
+		});
 
-    const statusEl = document.getElementById('status');
-    const tooltipEl = document.getElementById('tooltip');
-    const ws = new WebSocket(`ws://${location.host}/ws/topology`);
+		const statusEl = document.getElementById('status');
+		const tooltipEl = document.getElementById('tooltip');
+		const modeSelector = document.getElementById('mode-selector');
+		const modeButtons = Array.from(modeSelector.querySelectorAll('button[data-mode]'));
+		const ws = new WebSocket(`ws://${location.host}/ws/topology`);
 
-    // Mininet assigns DPIDs as 00:00:00:00:00:00:00:01, ...
-    function getSwitchAlias(dpid) {
-      // Mininet torus/grid: last two bytes are row, col (e.g., 00:...:01:02)
-      const parts = dpid.split(":");
-      if (parts.length >= 2) {
-        const row = parseInt(parts[parts.length - 2], 16);
-        const col = parseInt(parts[parts.length - 1], 16);
-        // If row or col is 0, treat as linear (s1, s2, ...)
-        if (row > 0 && col > 0) {
-          return `s${row}x${col}`;
-        } else {
-          // fallback: just use last byte
-          return `s${col}`;
-        }
-      } else if (dpid.length > 0) {
-        // fallback: try last two chars
-        const num = parseInt(dpid.slice(-2), 16);
-        return `s${num}`;
-      }
-      return dpid;
-    }
+		// Mininet assigns DPIDs as 00:00:00:00:00:00:00:01, ...
+		function getSwitchAlias(dpid) {
+			// Mininet torus/grid: last two bytes are row, col (e.g., 00:...:01:02)
+			const parts = dpid.split(":");
+			if (parts.length >= 2) {
+				const row = parseInt(parts[parts.length - 2], 16);
+				const col = parseInt(parts[parts.length - 1], 16);
+				// If row or col is 0, treat as linear (s1, s2, ...)
+				if (row > 0 && col > 0) {
+					return `s${row}x${col}`;
+				} else {
+					// fallback: just use last byte
+					return `s${col}`;
+				}
+			} else if (dpid.length > 0) {
+				// fallback: try last two chars
+				const num = parseInt(dpid.slice(-2), 16);
+				return `s${num}`;
+			}
+			return dpid;
+		}
 
-    // Stable host aliases by learned MAC
-    const hostAliases = new Map();
-    let hostCounter = 1;
+		// Stable host aliases by learned MAC
+		const hostAliases = new Map();
+		let hostCounter = 1;
 
-    function getHostAlias(mac) {
-      if (!hostAliases.has(mac)) {
-        hostAliases.set(mac, `h${hostCounter++}`);
-      }
-      return hostAliases.get(mac);
-    }
+		function getHostAlias(mac) {
+			if (!hostAliases.has(mac)) {
+				hostAliases.set(mac, `h${hostCounter++}`);
+			}
+			return hostAliases.get(mac);
+		}
 
-    function placeTooltip(event) {
-      const e = event.originalEvent;
-      if (!e) return;
-      tooltipEl.style.left = `${e.clientX + 12}px`;
-      tooltipEl.style.top = `${e.clientY + 12}px`;
-    }
+		function placeTooltip(event) {
+			const e = event.originalEvent;
+			if (!e) return;
+			tooltipEl.style.left = `${e.clientX + 12}px`;
+			tooltipEl.style.top = `${e.clientY + 12}px`;
+		}
 
-    cy.on('mouseover', 'node', (event) => {
-      const node = event.target;
-      tooltipEl.textContent = `${node.data('label')} • ${node.data('mac')}`;
-      tooltipEl.style.display = 'block';
-      placeTooltip(event);
-    });
+		cy.on('mouseover', 'node', (event) => {
+			const node = event.target;
+			tooltipEl.textContent = `${node.data('label')} • ${node.data('mac')}`;
+			tooltipEl.style.display = 'block';
+			placeTooltip(event);
+		});
 
-    cy.on('mousemove', 'node', (event) => {
-      placeTooltip(event);
-    });
+		cy.on('mousemove', 'node', (event) => {
+			placeTooltip(event);
+		});
 
-    cy.on('mouseout', 'node', () => {
-      tooltipEl.style.display = 'none';
-    });
+		cy.on('mouseout', 'node', () => {
+			tooltipEl.style.display = 'none';
+		});
 
-    cy.on('mouseover', 'edge', (event) => {
-      const edge = event.target;
-      tooltipEl.textContent = edge.data('hoverLabel');
-      tooltipEl.style.display = 'block';
-      placeTooltip(event);
-    });
+		cy.on('mouseover', 'edge', (event) => {
+			const edge = event.target;
+			tooltipEl.textContent = edge.data('hoverLabel');
+			tooltipEl.style.display = 'block';
+			placeTooltip(event);
+		});
 
-    cy.on('mousemove', 'edge', (event) => {
-      placeTooltip(event);
-    });
+		cy.on('mousemove', 'edge', (event) => {
+			placeTooltip(event);
+		});
 
-    cy.on('mouseout', 'edge', () => {
-      tooltipEl.style.display = 'none';
-    });
+		cy.on('mouseout', 'edge', () => {
+			tooltipEl.style.display = 'none';
+		});
 
-    ws.onopen = () => statusEl.textContent = 'Connected (Waiting for Mininet)';
-    ws.onclose = () => statusEl.textContent = 'Disconnected from Server';
+		ws.onopen = () => statusEl.textContent = 'Connected (Waiting for Mininet)';
+		ws.onclose = () => statusEl.textContent = 'Disconnected from Server';
 
-    // Node selection state (at most 2 selected devices)
-    const selectedNodeIds = [];
-    let highlightedEdgeIds = [];
-    let pathRequestSeq = 0;
+		function setActiveModeButton(mode) {
+			modeButtons.forEach((btn) => {
+				if (btn.dataset.mode === mode) {
+					btn.classList.add('active');
+				} else {
+					btn.classList.remove('active');
+				}
+			});
+		}
 
-    function refreshNodeSelectionStyles() {
-      cy.nodes().removeClass('selected-device');
-      selectedNodeIds.forEach((nodeId) => {
-        const node = cy.getElementById(nodeId);
-        if (node && node.length > 0) {
-          node.addClass('selected-device');
-        }
-      });
-    }
+		async function updateRoutingMode(mode) {
+			try {
+				const res = await fetch('/api/routing-mode', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ mode })
+				});
+				if (!res.ok) {
+					return;
+				}
+				const data = await res.json();
+				if (data.status === 'success') {
+					setActiveModeButton(data.mode);
+				}
+			} catch (_err) {
+				// Ignore transient failures
+			}
+		}
 
-    function refreshPathHighlightStyles() {
-      cy.edges().removeClass('path-highlight');
-      highlightedEdgeIds.forEach((edgeId) => {
-        const edge = cy.getElementById(edgeId);
-        if (edge && edge.length > 0) {
-          edge.addClass('path-highlight');
-        }
-      });
-    }
+		async function loadRoutingMode() {
+			try {
+				const res = await fetch('/api/routing-mode');
+				if (!res.ok) {
+					return;
+				}
+				const data = await res.json();
+				if (data && data.mode) {
+					setActiveModeButton(data.mode);
+				}
+			} catch (_err) {
+				// Ignore transient failures
+			}
+		}
 
-    async function requestPathHighlight() {
-      const requestId = ++pathRequestSeq;
+		modeButtons.forEach((btn) => {
+			btn.addEventListener('click', () => {
+				const mode = btn.dataset.mode;
+				if (mode) {
+					updateRoutingMode(mode);
+				}
+			});
+		});
 
-      if (selectedNodeIds.length !== 2) {
-        highlightedEdgeIds = [];
-        refreshPathHighlightStyles();
-        return;
-      }
+		loadRoutingMode();
 
-      const [src, dst] = selectedNodeIds;
-      try {
-        const res = await fetch(`/api/path?src=${encodeURIComponent(src)}&dst=${encodeURIComponent(dst)}`);
-        if (!res.ok) {
-          return;
-        }
-        const data = await res.json();
-        if (requestId !== pathRequestSeq) {
-          return;
-        }
-        highlightedEdgeIds = data.found ? (data.edge_ids || []) : [];
-        refreshPathHighlightStyles();
-      } catch (_err) {
-        // Keep previous state on transient errors
-      }
-    }
+		const clearFlowBtn = document.getElementById('clear-flow-btn');
+		clearFlowBtn.addEventListener('click', async () => {
+			if (selectedNodeIds.length !== 2) {
+				alert('Please select exactly 2 nodes to clear their flow.');
+				return;
+			}
+			const srcNode = cy.getElementById(selectedNodeIds[0]);
+			const dstNode = cy.getElementById(selectedNodeIds[1]);
+			const srcMac = srcNode.data('mac');
+			const dstMac = dstNode.data('mac');
 
-    cy.on('tap', 'node', (event) => {
-      const node = event.target;
-      const nodeId = node.id();
-      const idx = selectedNodeIds.indexOf(nodeId);
+			try {
+				const res = await fetch('/api/clear-flow', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ src_mac: srcMac, dst_mac: dstMac })
+				});
+				const data = await res.json();
+				if (data.status === 'success') {
+					if (data.cleared) {
+						console.log(`Flow cleared between ${srcMac} and ${dstMac}`);
+					} else {
+						console.log(`No active flow found between ${srcMac} and ${dstMac}`);
+					}
+					// Refresh highlights
+					requestPathHighlight();
+				}
+			} catch (err) {
+				console.error('Failed to clear flow:', err);
+			}
+		});
 
-      // Toggle deselect on second click
-      if (idx !== -1) {
-        selectedNodeIds.splice(idx, 1);
-        refreshNodeSelectionStyles();
-        requestPathHighlight();
-        return;
-      }
+		// Node selection state (at most 2 selected devices)
+		const selectedNodeIds = [];
+		let highlightedEdgeIds = [];
+		let pathRequestSeq = 0;
 
-      // Keep at most 2 selected devices
-      if (selectedNodeIds.length >= 2) {
-        selectedNodeIds.shift();
-      }
-      selectedNodeIds.push(nodeId);
-      refreshNodeSelectionStyles();
-      requestPathHighlight();
-    });
+		function refreshNodeSelectionStyles() {
+			cy.nodes().removeClass('selected-device');
+			selectedNodeIds.forEach((nodeId) => {
+				const node = cy.getElementById(nodeId);
+				if (node && node.length > 0) {
+					node.addClass('selected-device');
+				}
+			});
+		}
 
-    cy.on('tap', 'edge', async (event) => {
-      const edge = event.target;
-      const src = edge.data('source');
-      const dst = edge.data('target');
-      
-      // Ensure we only modify switch-to-switch links
-      if (src && dst && !src.startsWith('host:') && !dst.startsWith('host:')) {
-        const currentCost = edge.data('cost') || 1;
-        const input = prompt(`Enter new cost for link ${getSwitchAlias(src)} ⟷ ${getSwitchAlias(dst)}:`, currentCost);
-        if (input !== null) {
-          const newCost = parseInt(input, 10);
-          if (!isNaN(newCost) && newCost > 0) {
-            try {
-              await fetch('/api/link_cost', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ src_dpid: src, dst_dpid: dst, cost: newCost })
-              });
-            } catch (e) {
-              console.error('Failed to change cost:', e);
-            }
-          } else {
-             alert('Cost must be a positive integer.');
-          }
-        }
-      }
-    });
-    
-    // Keep track of the nodes and edges so we don't redraw if nothing changed
-    let lastTopologyString = "";
+		function refreshPathHighlightStyles() {
+			cy.edges().removeClass('path-highlight');
+			highlightedEdgeIds.forEach((edgeId) => {
+				const edge = cy.getElementById(edgeId);
+				if (edge && edge.length > 0) {
+					edge.addClass('path-highlight');
+				}
+			});
+		}
 
-    function endpointToken(dpid, port) {
-      return `${dpid}:${port}`;
-    }
+		async function requestPathHighlight() {
+			const requestId = ++pathRequestSeq;
 
-    function buildDesiredGraph(data) {
-      const nodesById = new Map();
-      const edgesById = new Map();
+			if (selectedNodeIds.length !== 2) {
+				highlightedEdgeIds = [];
+				refreshPathHighlightStyles();
+				return;
+			}
 
-      data.switches.forEach((s) => {
-        nodesById.set(s, {
-          group: 'nodes',
-          data: {
-            id: s,
-            label: getSwitchAlias(s),
-            mac: s
-          }
-        });
-      });
+			const [src, dst] = selectedNodeIds;
+			try {
+				const res = await fetch(`/api/path?src=${encodeURIComponent(src)}&dst=${encodeURIComponent(dst)}`);
+				if (!res.ok) {
+					return;
+				}
+				const data = await res.json();
+				if (requestId !== pathRequestSeq) {
+					return;
+				}
+				highlightedEdgeIds = data.found ? (data.edge_ids || []) : [];
+				refreshPathHighlightStyles();
+			} catch (_err) {
+				// Keep previous state on transient errors
+			}
+		}
 
-      // Host nodes from learned MAC table
-      (data.hosts || []).forEach((h) => {
-        nodesById.set(h.id, {
-          group: 'nodes',
-          data: {
-            id: h.id,
-            label: getHostAlias(h.mac),
-            mac: h.mac
-          },
-          classes: 'host'
-        });
-      });
+		cy.on('tap', 'node', (event) => {
+			const node = event.target;
+			const nodeId = node.id();
+			const idx = selectedNodeIds.indexOf(nodeId);
 
-      // Deduplicate bidirectional links (A->B and B->A shown once)
-      const seenPairs = new Set();
-      data.links.forEach((l) => {
-        const a = endpointToken(l.src_dpid, l.src_port);
-        const b = endpointToken(l.dst_dpid, l.dst_port);
-        const pairKey = [a, b].sort().join('||');
-        if (seenPairs.has(pairKey)) {
-          return;
-        }
-        seenPairs.add(pairKey);
+			// Toggle deselect on second click
+			if (idx !== -1) {
+				selectedNodeIds.splice(idx, 1);
+				refreshNodeSelectionStyles();
+				requestPathHighlight();
+				return;
+			}
 
-        const isBidirectional = data.links.some(
-          (other) => other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
-                     other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
-        );
+			// Keep at most 2 selected devices
+			if (selectedNodeIds.length >= 2) {
+				selectedNodeIds.shift();
+			}
+			selectedNodeIds.push(nodeId);
+			refreshNodeSelectionStyles();
+			requestPathHighlight();
+		});
 
-        const srcAlias = getSwitchAlias(l.src_dpid);
-        const dstAlias = getSwitchAlias(l.dst_dpid);
-        const srcPort = l.src_port;
-        const dstPort = l.dst_port;
-        
-        // Find reverse link to check if cost is asymmetric
-        const reverseLink = data.links.find(other => 
-          other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
-          other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
-        );
-        const fwdCost = l.cost !== undefined ? l.cost : 1;
-        const revCost = (reverseLink && reverseLink.cost !== undefined) ? reverseLink.cost : 1;
+		cy.on('tap', 'edge', async (event) => {
+			const edge = event.target;
+			const src = edge.data('source');
+			const dst = edge.data('target');
 
-        const hasReverse = Boolean(reverseLink);
-        let displayCost = fwdCost;
-        let hoverCostLabel = `cost: ${fwdCost.toFixed(1)}`;
+			// Ensure we only modify switch-to-switch links
+			if (src && dst && !src.startsWith('host:') && !dst.startsWith('host:')) {
+				const currentCost = edge.data('cost') || 1;
+				const input = prompt(`Enter new cost for link ${getSwitchAlias(src)} ⟷ ${getSwitchAlias(dst)}:`, currentCost);
+				if (input !== null) {
+					const newCost = parseInt(input, 10);
+					if (!isNaN(newCost) && newCost > 0) {
+						try {
+							await fetch('/api/link_cost', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ src_dpid: src, dst_dpid: dst, cost: newCost })
+							});
+						} catch (e) {
+							console.error('Failed to change cost:', e);
+						}
+					} else {
+						alert('Cost must be a positive integer.');
+					}
+				}
+			}
+		});
 
-        if (isBidirectional && hasReverse) {
-          const avgCost = (fwdCost + revCost) / 2;
-          displayCost = avgCost;
-          hoverCostLabel = fwdCost !== revCost
-            ? `avg cost: ${avgCost.toFixed(1)}`
-            : `cost: ${avgCost.toFixed(1)}`;
-        }
+		// Keep track of the nodes and edges so we don't redraw if nothing changed
+		let lastTopologyString = "";
 
-        const costLabel = displayCost.toFixed(1);
-        const hoverLabel = (isBidirectional && hasReverse)
-          ? `${srcAlias}:${srcPort} ⟷ ${dstAlias}:${dstPort} (${hoverCostLabel})`
-          : `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (${hoverCostLabel})`;
+		function endpointToken(dpid, port) {
+			return `${dpid}:${port}`;
+		}
 
-        // Stable edge id for the same physical pair, regardless of message direction order
-        const edgeId = `link:${pairKey}`;
-        edgesById.set(edgeId, {
-          group: 'edges',
-          data: {
-            id: edgeId,
-            source: l.src_dpid,
-            target: l.dst_dpid,
-            hoverLabel: hoverLabel,
-            cost_label: costLabel,
-            cost: displayCost
-          },
-          classes: isBidirectional ? 'undirected' : ''
-        });
-      });
+		function buildDesiredGraph(data) {
+			const nodesById = new Map();
+			const edgesById = new Map();
 
-      // Host-to-switch attachment edges
-      (data.host_links || []).forEach((hl) => {
-        const srcAlias = getHostAlias((hl.host_id || '').replace(/^host:/, ''));
-        const dstAlias = getSwitchAlias(hl.switch_dpid);
-        // Show ports for both host and switch
-        const hostPort = hl.host_port || 'eth0'; // fallback if not provided
-        const switchPort = hl.switch_port;
-        const hoverLabel = `${srcAlias}:${hostPort}-${dstAlias}:${switchPort}`;
-        const edgeId = `hostlink:${hl.host_id}||${hl.switch_dpid}:${hl.switch_port}`;
+			data.switches.forEach((s) => {
+				nodesById.set(s, {
+					group: 'nodes',
+					data: {
+						id: s,
+						label: getSwitchAlias(s),
+						mac: s
+					}
+				});
+			});
 
-        edgesById.set(edgeId, {
-          group: 'edges',
-          data: {
-            id: edgeId,
-            source: hl.host_id,
-            target: hl.switch_dpid,
-            hoverLabel
-          },
-          classes: 'undirected'
-        });
-      });
+			// Host nodes from learned MAC table
+			(data.hosts || []).forEach((h) => {
+				nodesById.set(h.id, {
+					group: 'nodes',
+					data: {
+						id: h.id,
+						label: getHostAlias(h.mac),
+						mac: h.mac
+					},
+					classes: 'host'
+				});
+			});
 
-      return { nodesById, edgesById };
-    }
+			// Deduplicate bidirectional links (A->B and B->A shown once)
+			const seenPairs = new Set();
+			data.links.forEach((l) => {
+				const a = endpointToken(l.src_dpid, l.src_port);
+				const b = endpointToken(l.dst_dpid, l.dst_port);
+				const pairKey = [a, b].sort().join('||');
+				if (seenPairs.has(pairKey)) {
+					return;
+				}
+				seenPairs.add(pairKey);
 
-    function applyIncrementalGraphUpdate(data) {
-      const { nodesById, edgesById } = buildDesiredGraph(data);
+				const isBidirectional = data.links.some(
+					(other) => other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
+						other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
+				);
 
-      let nodeSetChanged = false;
+				const srcAlias = getSwitchAlias(l.src_dpid);
+				const dstAlias = getSwitchAlias(l.dst_dpid);
+				const srcPort = l.src_port;
+				const dstPort = l.dst_port;
 
-      cy.batch(() => {
-        // Remove edges that no longer exist
-        cy.edges().forEach((edge) => {
-          if (!edgesById.has(edge.id())) {
-            edge.remove();
-          }
-        });
+				// Find reverse link to check if cost is asymmetric
+				const reverseLink = data.links.find(other =>
+					other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
+					other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
+				);
+				const fwdCost = l.cost !== undefined ? l.cost : 1;
+				const revCost = (reverseLink && reverseLink.cost !== undefined) ? reverseLink.cost : 1;
 
-        // Remove nodes that no longer exist
-        cy.nodes().forEach((node) => {
-          if (!nodesById.has(node.id())) {
-            const selectedIdx = selectedNodeIds.indexOf(node.id());
-            if (selectedIdx !== -1) {
-              selectedNodeIds.splice(selectedIdx, 1);
-            }
-            node.remove();
-            nodeSetChanged = true;
-          }
-        });
+				let costLabel = fwdCost.toFixed(1);
+				if (isBidirectional && fwdCost !== revCost) {
+					// Display both costs if they are asymmetric (e.g. "1.0 / 5.0")
+					costLabel = `${fwdCost.toFixed(1)} / ${revCost.toFixed(1)}`;
+				}
 
-        // Add missing nodes and update existing node data
-        nodesById.forEach((nodeEl, nodeId) => {
-          const existing = cy.getElementById(nodeId);
-          if (existing && existing.length > 0) {
-            Object.keys(nodeEl.data).forEach(k => existing.data(k, nodeEl.data[k]));
-          } else {
-            cy.add(nodeEl);
-            nodeSetChanged = true;
-          }
-        });
+				const label1 = `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (cost: ${fwdCost.toFixed(1)})`;
+				const label2 = `${dstAlias}:${dstPort}-${srcAlias}:${srcPort} (cost: ${revCost.toFixed(1)})`;
+				const hoverLabel = [label1, label2]
+					.sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
+					.join('\n');
 
-        // Add missing edges and update existing edge data/classes
-        edgesById.forEach((edgeEl, edgeId) => {
-          const existing = cy.getElementById(edgeId);
-          if (existing && existing.length > 0) {
-            Object.keys(edgeEl.data).forEach(k => existing.data(k, edgeEl.data[k]));
-            existing.classes(edgeEl.classes || '');
-          } else {
-            cy.add(edgeEl);
-          }
-        });
-      });
+				// Stable edge id for the same physical pair, regardless of message direction order
+				const edgeId = `link:${pairKey}`;
+				edgesById.set(edgeId, {
+					group: 'edges',
+					data: {
+						id: edgeId,
+						source: l.src_dpid,
+						target: l.dst_dpid,
+						hoverLabel: hoverLabel,
+						cost_label: costLabel,
+						cost: fwdCost
+					},
+					classes: isBidirectional ? 'undirected' : ''
+				});
+			});
 
-      // Re-run layout only when switches are added/removed; link changes should not reposition all nodes.
-      if (nodeSetChanged) {
-        cy.layout({ name: 'cose', animate: true, animationDuration: 250 }).run();
-      }
+			// Host-to-switch attachment edges
+			(data.host_links || []).forEach((hl) => {
+				const srcAlias = getHostAlias((hl.host_id || '').replace(/^host:/, ''));
+				const dstAlias = getSwitchAlias(hl.switch_dpid);
+				// Show ports for both host and switch
+				const hostPort = hl.host_port || 'eth0'; // fallback if not provided
+				const switchPort = hl.switch_port;
+				const hoverLabel = `${srcAlias}:${hostPort}-${dstAlias}:${switchPort}`;
+				const edgeId = `hostlink:${hl.host_id}||${hl.switch_dpid}:${hl.switch_port}`;
 
-      // Re-apply selection classes after graph updates
-      refreshNodeSelectionStyles();
-      refreshPathHighlightStyles();
-    }
+				edgesById.set(edgeId, {
+					group: 'edges',
+					data: {
+						id: edgeId,
+						source: hl.host_id,
+						target: hl.switch_dpid,
+						hoverLabel
+					},
+					classes: 'undirected'
+				});
+			});
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.switches.length > 0) {
-        statusEl.textContent = `Switches: ${data.switches.length} | Hosts: ${(data.hosts || []).length} | Links: ${data.links.length}`;
-      } else {
-        statusEl.textContent = 'Connected (Waiting for Mininet to start...)';
-      }
+			return { nodesById, edgesById };
+		}
 
-      // --- Reset host aliases if all hosts are gone ---
-      if ((data.hosts || []).length === 0) {
-        hostAliases.clear();
-        hostCounter = 1;
-      }
+		function applyIncrementalGraphUpdate(data) {
+			const { nodesById, edgesById } = buildDesiredGraph(data);
 
-      // Check if topology actually changed before re-rendering
-      const currentTopologyString = JSON.stringify(data);
-      if (currentTopologyString === lastTopologyString) {
-          return; // No changes, do nothing.
-      }
-      lastTopologyString = currentTopologyString;
+			let nodeSetChanged = false;
 
-      // Incremental update: only changed links/nodes are updated
-      applyIncrementalGraphUpdate(data);
+			cy.batch(() => {
+				// Remove edges that no longer exist
+				cy.edges().forEach((edge) => {
+					if (!edgesById.has(edge.id())) {
+						edge.remove();
+					}
+				});
 
-      // Recompute path highlight on each topology update so UI stays synced with runtime state
-      requestPathHighlight();
-    };
+				// Remove nodes that no longer exist
+				cy.nodes().forEach((node) => {
+					if (!nodesById.has(node.id())) {
+						const selectedIdx = selectedNodeIds.indexOf(node.id());
+						if (selectedIdx !== -1) {
+							selectedNodeIds.splice(selectedIdx, 1);
+						}
+						node.remove();
+						nodeSetChanged = true;
+					}
+				});
 
-    // Note: If you have an existing fetchTopology/setInterval left over from the very first setup, it's removed now.
-  </script>
+				// Add missing nodes and update existing node data
+				nodesById.forEach((nodeEl, nodeId) => {
+					const existing = cy.getElementById(nodeId);
+					if (existing && existing.length > 0) {
+						Object.keys(nodeEl.data).forEach(k => existing.data(k, nodeEl.data[k]));
+					} else {
+						cy.add(nodeEl);
+						nodeSetChanged = true;
+					}
+				});
+
+				// Add missing edges and update existing edge data/classes
+				edgesById.forEach((edgeEl, edgeId) => {
+					const existing = cy.getElementById(edgeId);
+					if (existing && existing.length > 0) {
+						Object.keys(edgeEl.data).forEach(k => existing.data(k, edgeEl.data[k]));
+						existing.classes(edgeEl.classes || '');
+					} else {
+						cy.add(edgeEl);
+					}
+				});
+			});
+
+			// Re-run layout only when switches are added/removed; link changes should not reposition all nodes.
+			if (nodeSetChanged) {
+				cy.layout({ name: 'cose', animate: true, animationDuration: 250 }).run();
+			}
+
+			// Re-apply selection classes after graph updates
+			refreshNodeSelectionStyles();
+			refreshPathHighlightStyles();
+		}
+
+		ws.onmessage = (event) => {
+			const data = JSON.parse(event.data);
+			if (data.switches.length > 0) {
+				statusEl.textContent = `Switches: ${data.switches.length} | Hosts: ${(data.hosts || []).length} | Links: ${data.links.length}`;
+			} else {
+				statusEl.textContent = 'Connected (Waiting for Mininet to start...)';
+			}
+
+			// --- Reset host aliases if all hosts are gone ---
+			if ((data.hosts || []).length === 0) {
+				hostAliases.clear();
+				hostCounter = 1;
+			}
+
+			// Check if topology actually changed before re-rendering
+			const currentTopologyString = JSON.stringify(data);
+			if (currentTopologyString === lastTopologyString) {
+				return; // No changes, do nothing.
+			}
+			lastTopologyString = currentTopologyString;
+
+			// Incremental update: only changed links/nodes are updated
+			applyIncrementalGraphUpdate(data);
+
+			// Recompute path highlight on each topology update so UI stays synced with runtime state
+			requestPathHighlight();
+		};
+
+		// Note: If you have an existing fetchTopology/setInterval left over from the very first setup, it's removed now.
+	</script>
 </body>
+
 </html>

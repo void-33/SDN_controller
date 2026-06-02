@@ -4,6 +4,7 @@ from ofproto.packet_in import OFPPacketIn
 from ofproto.multipart import OFPMultipartReply
 from ofproto.lldp import LLDPPacket, ETHERTYPE_LLDP
 import topology
+import routing
 import struct
 import threading
 
@@ -35,6 +36,21 @@ _port_stats_state = {}
 
 # Track active flows: (src_mac, dst_mac) -> {'path': [(dpid, out_port), ...], 'dst_dpid': str, 'dst_port': int}
 active_flows = {}
+
+
+def clear_flow(src_mac: bytes, dst_mac: bytes):
+    """Remove controller-tracked and switch-installed rules for a host flow."""
+    flow_key = (bytes(src_mac), bytes(dst_mac))
+    old_flow = active_flows.pop(flow_key, None)
+
+    # Remove from all connected switches for fair benchmark mode switching.
+    for connection in list(switches.values()):
+        try:
+            utils.remove_mac_flow(connection, dst_mac)
+        except Exception:
+            pass
+
+    return old_flow
 
 
 def start_lldp_sender():
@@ -111,7 +127,8 @@ def _reroute_affected_flows(removed_links: list, reason: str):
                 continue
 
             src_dpid_for_flow = flow_info['path'][0][0]
-            new_path = topology.find_path(src_dpid_for_flow, dst_dpid)
+            decision = routing.select_path(src_dpid_for_flow, dst_dpid, src_mac, dst_mac)
+            new_path = decision.path
 
             # Always remove old rules first (best effort)
             for hop_dpid, _ in flow_info['path']:
@@ -137,11 +154,19 @@ def _reroute_affected_flows(removed_links: list, reason: str):
                 utils.install_mac_flow(dst_conn, dst_mac, dst_port, xid=0)
 
             active_flows[flow_key]['path'] = list(new_path)
+            active_flows[flow_key]['routing_mode'] = decision.routing_mode
+            active_flows[flow_key]['dqn_action'] = decision.action
             print(f"[REROUTE] Flow {src_mac.hex(':')}->{dst_mac.hex(':')} rerouted.")
 
 def _check_for_better_paths():
     """Periodically checks if a cheaper path is available for active flows."""
+    if routing.get_mode() != "cost":
+        return
+
     for flow_key, flow_info in list(active_flows.items()):
+        if flow_info.get('rl_managed'):
+            continue
+
         src_mac, dst_mac = flow_key
         dst_dpid = flow_info['dst_dpid']
         dst_port = flow_info['dst_port']
@@ -150,7 +175,8 @@ def _check_for_better_paths():
         if not current_path: continue
         
         src_dpid = current_path[0][0]
-        new_path = topology.find_path(src_dpid, dst_dpid)
+        decision = routing.select_path(src_dpid, dst_dpid, src_mac, dst_mac)
+        new_path = decision.path
         
         # If a path exists and it's structurally different from the current path
         if new_path and new_path != current_path:
@@ -179,6 +205,8 @@ def _check_for_better_paths():
                 utils.install_mac_flow(dst_conn, dst_mac, dst_port, xid=0)
                 
             active_flows[flow_key]['path'] = list(new_path)
+            active_flows[flow_key]['routing_mode'] = decision.routing_mode
+            active_flows[flow_key]['dqn_action'] = decision.action
 
 
 def _path_cost(path: list) -> float:
@@ -469,9 +497,12 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
 
 
     # 5c. Known unicast on different switch - compute path and install flows
-    path = topology.find_path(formatted_dpid, dst_dpid)
+    decision = routing.select_path(formatted_dpid, dst_dpid, bytes(src_mac), bytes(dst_mac))
+    path = decision.path
 
     if not path:
+        if decision.error:
+            print(f"[ROUTING] {decision.error}")
         return  # no path, drop
 
     # Install flows on every intermediate switch
@@ -490,7 +521,9 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
     active_flows[flow_key] = {
         'path': list(path),
         'dst_dpid': dst_dpid,
-        'dst_port': dst_port
+        'dst_port': dst_port,
+        'routing_mode': decision.routing_mode,
+        'dqn_action': decision.action,
     }
 
     # Forward this packet out the first hop
